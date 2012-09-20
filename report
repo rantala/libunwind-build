@@ -1,0 +1,146 @@
+#!/usr/bin/perl
+
+use v5.10;
+use strict;
+use Data::Dumper;
+use List::MoreUtils qw/uniq/;
+
+my $native = 'i686-linux-gnu';
+my @build_targets = (
+	#'i686-linux-gnu',
+	'arm-linux-gnueabi',
+	'arm-linux-gnueabihf',
+	'hppa-linux-gnu',
+	'ia64-linux-gnu',
+	'mipsel-linux-gnu',
+	'mips-linux-gnu',
+	'powerpc-linux-gnu',
+	'powerpc64-linux-gnu',
+	'sh4-linux-gnu',
+	'x86_64-linux-gnu',
+	'---',
+	'target-arm-linux-gnueabi',
+	'target-arm-linux-gnueabihf',
+	'target-hppa-linux-gnu',
+	'target-ia64-linux-gnu',
+	'target-mipsel-linux-gnu',
+	'target-mips-linux-gnu',
+	'target-powerpc-linux-gnu',
+	'target-powerpc64-linux-gnu',
+	'target-sh4-linux-gnu',
+);
+
+sub botlog {
+	my ($str) = @_;
+	my $now = scalar localtime;
+	say STDERR "[$now]: $str";
+}
+
+if (@ARGV == 0) {
+	say "Usage: report <commit-id>...";
+	exit 1;
+}
+
+open my $h, '>report.html' or die "$!";
+
+foreach my $commit (@ARGV) {
+	my %messages;
+
+	foreach my $target (@build_targets) {
+		my $buildlog = "/build/$commit/$target-build.txt";
+		my $checklog = "/build/$commit/$target-check.txt";
+
+		open my $fh, $buildlog or next;
+		$messages{$target}->{build_errors} = [];
+		$messages{$target}->{build_warnings} = [];
+		while (<$fh>) {
+			chomp;
+			if (/ error: / or m/ Error:? /) {
+				push @{$messages{$target}->{build_errors}}, $_;
+			} elsif (/ warning: /) {
+				push @{$messages{$target}->{build_warnings}}, $_;
+			}
+		}
+
+		$messages{$target}->{build_errors}   = [uniq @{$messages{$target}->{build_errors}}];
+		$messages{$target}->{build_warnings} = [uniq @{$messages{$target}->{build_warnings}}];
+
+		open my $fh, $checklog or next;
+		$messages{$target}->{check_errors} = [];
+		$messages{$target}->{check_warnings} = [];
+		$messages{$target}->{check_pass} = [];
+		$messages{$target}->{check_fail} = [];
+		while (<$fh>) {
+			chomp;
+			if (/ error: / or m/ Error:? /) {
+				push @{$messages{$target}->{check_errors}}, $_;
+			} elsif (/ warning: /) {
+				push @{$messages{$target}->{check_warnings}}, $_;
+			} elsif (/^PASS: /) {
+				push @{$messages{$target}->{check_pass}}, $_;
+			} elsif (/^FAIL: /) {
+				push @{$messages{$target}->{check_fail}}, $_;
+			}
+		}
+
+		$messages{$target}->{check_errors}   = [uniq @{$messages{$target}->{check_errors}}];
+		$messages{$target}->{check_warnings} = [uniq @{$messages{$target}->{check_warnings}}];
+	}
+	#print Dumper \%messages;
+
+	say $h "<h1>$commit</h1>";
+	say $h '<table>';
+	say $h '<tr><td><td><pre>make</pre><td><td><pre>make check</pre><td><td><pre>PASS</pre><td><pre>FAIL</pre>';
+
+	foreach my $target (@build_targets) {
+		say $h "<tr><td>$target";
+
+		if (not defined $messages{$target}->{build_errors}) {
+			say $h '<td>N/A</td>';
+		} elsif (@{$messages{$target}->{build_errors} // []} > 0) {
+			say $h "<td bgcolor=red>" . @{$messages{$target}->{build_errors}} . " errors";
+		} else {
+			say $h '<td bgcolor=green>0 errors';
+		}
+
+		if (not defined $messages{$target}->{build_warnings}) {
+			say $h '<td>N/A</td>';
+		} elsif (@{$messages{$target}->{build_warnings} // []} > 0) {
+			say $h "<td bgcolor=yellow>" . @{$messages{$target}->{build_warnings}} . " warnings";
+		} else {
+			say $h "<td bgcolor=green>0 warnings";
+		}
+
+		if (not defined $messages{$target}->{check_errors}) {
+			say $h '<td>N/A</td>';
+		} elsif (@{$messages{$target}->{check_errors} // []} > 0) {
+			say $h "<td bgcolor=red>" . @{$messages{$target}->{check_errors}} . " errors";
+		} else {
+			say $h "<td bgcolor=green>0 errors";
+		}
+
+		if (not defined $messages{$target}->{check_warnings}) {
+			say $h '<td>N/A</td>';
+		} elsif (@{$messages{$target}->{check_warnings} // []} > 0) {
+			say $h "<td bgcolor=yellow>" . @{$messages{$target}->{check_warnings}} . " warnings";
+		} else {
+			say $h "<td bgcolor=green>0 warnings";
+		}
+
+		if (not defined $messages{$target}->{check_pass}) {
+			say $h '<td>N/A</td>';
+		} else {
+			say $h "<td>" . @{$messages{$target}->{check_pass}};
+		}
+
+		if (not defined $messages{$target}->{check_fail}) {
+			say $h '<td>N/A</td>';
+		} else {
+			say $h "<td>" . @{$messages{$target}->{check_fail}};
+		}
+	}
+
+	say $h '</table>';
+}
+
+say 'OK';

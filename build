@@ -1,0 +1,136 @@
+#!/usr/bin/perl
+
+use v5.10;
+use strict;
+use Getopt::Long;
+
+my $cflags = "-O2 -g -Wall";
+my $cxxflags = $cflags;
+
+#my $native = 'i686-linux-gnu';
+my $native = 'x86_64-linux-gnu';
+my @build_targets = (
+	#'i686-linux-gnu',
+	'x86_64-linux-gnu',
+	'x86-linux-gnu',
+	'arm-linux-gnueabi',
+	'arm-linux-gnueabihf',
+	'ia64-linux-gnu',
+	'mips-linux-gnu',
+	'mipsel-linux-gnu',
+	'powerpc-linux-gnu',
+	'powerpc64-linux-gnu',
+	'hppa-linux-gnu',
+	'sh4-linux-gnu',
+);
+
+my %build_flags = (
+	'x86-linux-gnu' => '-m32',
+);
+
+my $flag_j;
+my $forkmanager;
+
+exit(1) unless GetOptions(
+	#'h' => \$flag_h,
+	#'help' => \$flag_h,
+	'j=i' => \$flag_j,
+);
+
+$ENV{LANG} = 'C';
+
+if ($flag_j > 1) {
+	require Parallel::ForkManager;
+	$forkmanager = new Parallel::ForkManager($flag_j);
+}
+
+sub botlog {
+	my ($str) = @_;
+	my $now = scalar localtime;
+	say STDERR "[$now]: $str";
+}
+
+my $commit = $ARGV[0];
+if ($commit eq '') {
+	say "Usage: build <commit-id>";
+	exit 1;
+}
+
+if (! -d '/build') {
+	say STDERR "Please create /build first, for example:";
+	say STDERR "   sudo mkdir /build";
+	say STDERR "   sudo mount -t tmpfs -o size=2G tmpfs /build";
+	exit 1;
+}
+
+chdir '/build' or die "Unable to chdir to /build: $!";
+
+my $srcdir = "$commit/libunwind";
+if (-d $srcdir) {
+	system("rm -rf $srcdir");
+}
+botlog "Cloning repository...";
+`git clone /butter/git/libunwind $srcdir` || die 'unable to clone repository';
+botlog "Resetting repository to commit '$commit'...";
+`cd $srcdir && git reset --hard $commit` || die "unable to reset repository to commit '$commit'";
+botlog "touch doc/*.man";
+`cd $srcdir/doc && find . -type f -name '*.man' | xargs touch`;
+botlog "autoreconf...";
+`cd $srcdir && git clean -xdf && autoreconf -f -i 2>&1` || die 'autoreconf failed';
+
+# cross-targets
+foreach my $target (@build_targets) {
+	$forkmanager->start() and next if $forkmanager;
+	my $builddir = "$commit/target-$target";
+	botlog "=== BUILD: --target=$target ===";
+	if (-d $builddir) {
+		system("rm -rf $builddir");
+	}
+	mkdir $builddir;
+	botlog "$target: configure ...";
+	`cd $builddir && nice ../libunwind/configure --enable-coredump --build=$native --target=$target CFLAGS="$cflags $build_flags{$target}" CXXFLAGS="$cxxflags $build_flags{$target}"`
+		|| die './configure failed';
+	botlog "$target: make...";
+	system "cd $builddir && nice make -j4 >../target-$target-build.txt 2>&1";
+	if ($?) {
+		botlog "--target=$target: make failed!";
+	} else {
+		botlog "$target: make check...";
+		system "cd $builddir/tests && make check --keep-going >../../target-$target-check.txt 2>&1";
+	}
+	$forkmanager->finish() if $forkmanager;
+}
+
+# cross-builds
+foreach my $target (@build_targets) {
+	$forkmanager->start() and next if $forkmanager;
+	my $builddir = "$commit/$target";
+	botlog "=== BUILD: $target ===";
+	if (-d $builddir) {
+		system("rm -rf $builddir");
+	}
+	mkdir $builddir;
+	botlog "$target: configure ...";
+	`cd $builddir && nice ../libunwind/configure --enable-coredump --build=$native --host=$target CFLAGS="$cflags $build_flags{$target}" CXXFLAGS="$cxxflags $build_flags{$target}"`
+		|| die './configure failed';
+	botlog "$target: make...";
+	system "cd $builddir && nice make -j4 >../$target-build.txt 2>&1";
+	if ($?) {
+		botlog "$target: make failed!";
+	} else {
+		botlog "$target: make check...";
+		system "cd $builddir/tests && make check --keep-going >../../$target-check.txt 2>&1";
+	}
+	$forkmanager->finish() if $forkmanager;
+}
+$forkmanager->wait_all_children() if $forkmanager;
+
+my ($du) = `LC_ALL=C du -hc $commit | tail -1`;
+chomp $du;
+botlog "$commit: $du";
+
+my @df = `LC_ALL=C df -h .`;
+foreach (@df) {
+	chomp;
+	botlog $_;
+}
